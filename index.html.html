@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Payómetro</title>
+<link href="https://fonts.googleapis.com/css2?family=Anton&family=Source+Serif+4:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#14110d;--panel:#1f1a14;--ink:#f1e9d8;--muted:#a89d86;--acc:#f5c518;--hot:#e0452b;--ok:#6fd08c;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:"Source Serif 4",Georgia,serif;line-height:1.5;min-height:100vh}
+main{max-width:520px;margin:0 auto;padding:28px 18px 56px;text-align:center}
+h1{font-family:Anton,Impact,sans-serif;font-weight:400;font-size:clamp(2.6rem,12vw,4.2rem);line-height:1;margin:0;letter-spacing:.01em}
+.sub{color:var(--muted);margin:8px 0 22px}
+.stage{position:relative;width:100%;aspect-ratio:3/4;background:#000;border-radius:6px;overflow:hidden;border:2px solid #3a3226}
+.stage video,.stage canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+video{transform:scaleX(-1)}
+.stage .msg{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:24px;color:var(--muted)}
+.scan{position:absolute;left:0;right:0;height:4px;background:var(--acc);box-shadow:0 0 18px 6px rgba(245,197,24,.55);top:0;display:none}
+.scanning .scan{display:block;animation:sweep 1.6s ease-in-out infinite alternate}
+@keyframes sweep{to{top:calc(100% - 4px)}}
+.frame{position:absolute;inset:14%;border:2px dashed rgba(245,197,24,.7);border-radius:50%/42%;pointer-events:none}
+button,.btn{display:inline-block;font:inherit;font-weight:600;font-size:1.05rem;background:var(--acc);color:#1d1a16;border:0;border-radius:6px;padding:14px 26px;margin-top:18px;cursor:pointer}
+button.alt,.btn.alt{background:transparent;color:var(--ink);border:1px solid #5a4f3f}
+button:focus-visible,.btn:focus-visible{outline:3px solid var(--ink);outline-offset:3px}
+button[disabled]{opacity:.5;cursor:default}
+.status{min-height:1.6em;margin-top:16px;color:var(--muted);font-style:italic}
+.result{display:none;margin-top:26px}
+.result.show{display:block}
+.pct{font-family:Anton,Impact,sans-serif;font-size:clamp(5rem,28vw,8.5rem);line-height:1;color:var(--acc)}
+.mote{font-family:Anton,Impact,sans-serif;font-size:clamp(1.8rem,8vw,2.6rem);line-height:1.1;margin:6px 0 10px}
+.mote.top{color:var(--hot)}
+.desc{color:var(--muted);max-width:40ch;margin:0 auto 18px}
+.metrics{text-align:left;background:var(--panel);border-radius:6px;padding:16px 18px;margin:18px 0 0}
+.metrics div+div{margin-top:12px}
+.metrics span{display:flex;justify-content:space-between;font-size:.95rem}
+.bar{height:8px;background:#3a3226;border-radius:4px;overflow:hidden;margin-top:4px}
+.bar i{display:block;height:100%;width:0;background:var(--acc);transition:width 1.1s ease}
+.hidden{display:none!important}
+.fine{color:var(--muted);font-size:.8rem;margin-top:28px}
+@media (prefers-reduced-motion:reduce){.scanning .scan{animation:none;top:50%}.bar i{transition:none}}
+</style>
+</head>
+<body>
+<main>
+  <h1>Payómetro</h1>
+  <p class="sub">Escáner facial de payez de última generación</p>
+
+  <div class="stage" id="stage">
+    <video id="video" playsinline muted></video>
+    <canvas id="shot" class="hidden"></canvas>
+    <div class="frame" id="frame"></div>
+    <div class="scan"></div>
+    <div class="msg" id="msg">Pulsa «Activar cámara» para empezar.</div>
+  </div>
+
+  <div class="status" id="status" aria-live="polite"></div>
+
+  <div id="controls">
+    <button id="start">Activar cámara</button>
+    <button id="snap" class="hidden">Hacer foto y analizar</button>
+    <button id="again" class="alt hidden">Volver a probar</button>
+  </div>
+  <div id="fallback" class="hidden">
+    <p class="desc">No se pudo abrir la cámara. Puedes hacer o elegir una foto desde tu dispositivo.</p>
+    <label class="btn">Hacer o elegir foto<input type="file" id="file" accept="image/*" capture="user" class="hidden"></label>
+  </div>
+
+  <section class="result" id="result" aria-live="polite">
+    <div class="pct" id="pct">0%</div>
+    <div class="mote" id="mote"></div>
+    <p class="desc" id="desc"></p>
+    <div class="metrics" id="metrics"></div>
+  </section>
+
+  <p class="fine">Es una broma: el porcentaje sale al azar y no analiza nada de verdad. La foto no se guarda ni se envía a ningún sitio.</p>
+</main>
+
+<script>
+(function(){
+  var $=function(id){return document.getElementById(id)};
+  var video=$('video'),shot=$('shot'),stage=$('stage'),msg=$('msg'),statusEl=$('status');
+  var startB=$('start'),snapB=$('snap'),againB=$('again'),fallback=$('fallback'),fileIn=$('file');
+  var result=$('result'),stream=null,busy=false;
+
+  var tiers=[
+    {min:100,mote:'REY DE LOS PAYOS',top:true,d:'Máxima puntuación posible. Los científicos no tienen palabras. Se recomienda una reverencia.'},
+    {min:95,mote:'Emperador Payus Maximus',top:true,d:'A un solo punto de la corona. Su linaje payo es incuestionable.'},
+    {min:90,mote:'Payo de pura cepa',d:'Payez de denominación de origen. El escáner estuvo a punto de pedirle autógrafos.'},
+    {min:85,mote:'Payo de manual',d:'Aparece en los libros como ejemplo de lo que es un payo.'},
+    {min:80,mote:'Payo con pedigrí',d:'Árbol genealógico impecable y flequillo de buena familia.'},
+    {min:75,mote:'Payo de carrera',d:'Años de práctica constante. Se nota el esfuerzo.'},
+    {min:70,mote:'Payo en ascenso',d:'Gran potencial. Con un poco más de dedicación llegará a lo más alto.'},
+    {min:0,mote:'Aprendiz de payo',d:'Todavía en formación, pero el escáner ve cosas buenas.'}
+  ];
+  var steps=['Localizando el rostro…','Midiendo el índice de flequillo…','Calculando el coeficiente de mirada…','Comparando con la base de datos de payos…','Consultando a los ancianos del gremio…','Calculando el resultado final…'];
+  var metricNames=['Índice de flequillo','Coeficiente de mirada','Factor de pose','Aura payoide'];
+
+  function randPct(){
+    if(Math.random()<0.07) return 100;
+    return Math.min(99,Math.round(70+29*Math.sqrt(Math.random())));
+  }
+  function tierFor(p){for(var i=0;i<tiers.length;i++){if(p>=tiers[i].min)return tiers[i]}}
+  function show(el,on){el.classList.toggle('hidden',!on)}
+
+  function stopCam(){if(stream){stream.getTracks().forEach(function(t){t.stop()});stream=null}}
+
+  startB.onclick=function(){
+    statusEl.textContent='Pidiendo permiso para la cámara…';
+    if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){noCam();return}
+    navigator.mediaDevices.getUserMedia({video:{facingMode:'user'},audio:false}).then(function(s){
+      stream=s;video.srcObject=s;video.play();
+      show(video,true);show(shot,false);msg.classList.add('hidden');$('frame').classList.remove('hidden');
+      show(startB,false);show(snapB,true);show(fallback,false);
+      statusEl.textContent='Centra la cara dentro del óvalo y pulsa el botón.';
+    }).catch(noCam);
+  };
+  function noCam(){
+    statusEl.textContent='';msg.textContent='Cámara no disponible.';msg.classList.remove('hidden');
+    show(startB,false);show(fallback,true);
+  }
+
+  function analyze(){
+    if(busy)return;busy=true;
+    result.classList.remove('show');
+    show(snapB,false);show(againB,false);show(fallback,false);
+    stage.classList.add('scanning');
+    var i=0;statusEl.textContent=steps[0];
+    var iv=setInterval(function(){i++;if(i<steps.length)statusEl.textContent=steps[i]},750);
+    setTimeout(function(){
+      clearInterval(iv);stage.classList.remove('scanning');finish();
+    },steps.length*750+300);
+  }
+
+  snapB.onclick=function(){
+    var w=video.videoWidth||640,h=video.videoHeight||480;
+    shot.width=w;shot.height=h;
+    var c=shot.getContext('2d');c.translate(w,0);c.scale(-1,1);c.drawImage(video,0,0,w,h);
+    show(shot,true);show(video,false);
+    stopCam();analyze();
+  };
+
+  fileIn.onchange=function(){
+    var f=fileIn.files&&fileIn.files[0];if(!f)return;
+    var img=new Image();
+    img.onload=function(){
+      shot.width=img.width;shot.height=img.height;
+      shot.getContext('2d').drawImage(img,0,0);
+      URL.revokeObjectURL(img.src);
+      msg.classList.add('hidden');show(shot,true);show(video,false);analyze();
+    };
+    img.src=URL.createObjectURL(f);
+  };
+
+  function finish(){
+    var p=randPct(),t=tierFor(p);
+    $('pct').textContent='0%';
+    var n=0,step=Math.max(1,Math.round(p/40));
+    var cnt=setInterval(function(){n=Math.min(p,n+step);$('pct').textContent=n+'%';if(n>=p)clearInterval(cnt)},30);
+    var m=$('mote');m.textContent=t.mote;m.className='mote'+(t.top?' top':'');
+    $('desc').textContent=t.d;
+    var html='';
+    metricNames.forEach(function(name){
+      var v=Math.min(100,Math.max(60,p+Math.round((Math.random()-0.5)*14)));
+      html+='<div><span><b>'+name+'</b><span>'+v+'%</span></span><div class="bar"><i data-w="'+v+'"></i></div></div>';
+    });
+    $('metrics').innerHTML=html;
+    result.classList.add('show');
+    setTimeout(function(){document.querySelectorAll('.bar i').forEach(function(b){b.style.width=b.dataset.w+'%'})},60);
+    statusEl.textContent='Análisis completado.';
+    show(againB,true);busy=false;
+    result.scrollIntoView({behavior:'smooth',block:'nearest'});
+  }
+
+  againB.onclick=function(){
+    result.classList.remove('show');show(againB,false);show(shot,false);
+    statusEl.textContent='';
+    startB.onclick();
+  };
+})();
+</script>
+</body>
+</html>
